@@ -8,7 +8,7 @@ Hybrid Architecture: Render + Base44
 Modules:
 1. Conversation Starter + Theme Day — จุดประเด็นอัตโนมัติ 1 ครั้ง/วัน 18:30
 2. Weekly Poll — โหวตประจำสัปดาห์ทุกวันอาทิตย์ 19:00
-3. Slash Commands — /topic /stats /ping /faq /reload /poll
+3. Slash Commands — /topic /stats /ping /faq /reload /poll /suggest
 4. New Member Helper — รีแอ็คชันอัตโนมัติใน #แนะนำตัว
 5. Monitoring — ส่งสถิติไป Base44 ทุกคืน
 6. Keep-Alive HTTP Server — bind port ให้ Render + self-ping กัน sleep
@@ -47,6 +47,7 @@ CHANNELS = {
     "pets":      1532279421095116811,  # สมาคมทาสแมว-ทาสหมา
     "meme":      1219894681622810644,  # มีม
     "mod_log":   1238727178548674580,  # แตะ-หมดเวลา-แบน
+    "support":   1460095076943397081,  # ติดต่อทีมซัพพอร์ต
 }
 
 # Role IDs (สำหรับ tag ใน conversation starter)
@@ -376,6 +377,42 @@ async def poll_cmd(interaction: discord.Interaction, question: str, options: str
     
     for i in range(len(choices)):
         await msg.add_reaction(poll_emojis[i])
+
+@bot.tree.command(name="suggest", description="ส่งคำแนะนำ/ไอเดียให้ทีมงาน")
+@app_commands.describe(
+    suggestion="คำแนะนำหรือไอเดียที่อยากเสนอ"
+)
+async def suggest_cmd(interaction: discord.Interaction, suggestion: str):
+    """สมาชิกส่งคำแนะนำไปยังช่องทีมซัพพอร์ต"""
+    # ส่งไปช่อง support
+    support_channel = bot.get_channel(CHANNELS["support"])
+    if not support_channel:
+        await interaction.response.send_message("ไม่พบช่องรับคำแนะนำ ติดต่อแอดมินโดยตรง", ephemeral=True)
+        return
+    
+    embed = discord.Embed(
+        title="💡 คำแนะนำจากสมาชิก",
+        description=suggestion,
+        color=0xFEE75C
+    )
+    embed.set_author(
+        name=interaction.user.display_name,
+        icon_url=interaction.user.display_avatar.url if interaction.user.display_avatar else None
+    )
+    embed.add_field(name="ส่งจากช่อง", value=f"#{interaction.channel.name}", inline=True)
+    embed.set_footer(text=f"User ID: {interaction.user.id} • Synapse")
+    embed.timestamp = datetime.now(ICT)
+    
+    try:
+        await support_channel.send(embed=embed)
+        await interaction.response.send_message(
+            "✅ ส่งคำแนะนำไปยังทีมงานแล้ว ขอบคุณที่ช่วยพัฒนาเซิร์ฟเวอร์! 🩵",
+            ephemeral=True
+        )
+        log.info(f"Suggestion from {interaction.user}: {suggestion[:50]}...")
+    except discord.HTTPException as e:
+        await interaction.response.send_message("ส่งไม่สำเร็จ ลองใหม่อีกครั้ง", ephemeral=True)
+        log.error(f"Failed to send suggestion: {e}")
 
 # ─── Scheduled Tasks ────────────────────────────────────
 
