@@ -48,6 +48,7 @@ CHANNELS = {
     "meme":      1219894681622810644,  # มีม
     "mod_log":   1238727178548674580,  # แตะ-หมดเวลา-แบน
     "support":   1460095076943397081,  # ติดต่อทีมซัพพอร์ต
+    "suggest":   1542912628697993298,  # แนะนำ (ส่งคำแนะนำ)
 }
 
 # Role IDs (สำหรับ tag ใน conversation starter)
@@ -383,9 +384,9 @@ async def poll_cmd(interaction: discord.Interaction, question: str, options: str
     suggestion="คำแนะนำหรือไอเดียที่อยากเสนอ"
 )
 async def suggest_cmd(interaction: discord.Interaction, suggestion: str):
-    """สมาชิกส่งคำแนะนำไปยังช่องทีมซัพพอร์ต"""
+    """สมาชิกส่งคำแนะนำไปยังช่องแนะนำ"""
     # ส่งไปช่อง support
-    support_channel = bot.get_channel(CHANNELS["support"])
+    suggest_channel = bot.get_channel(CHANNELS["suggest"])
     if not support_channel:
         await interaction.response.send_message("ไม่พบช่องรับคำแนะนำ ติดต่อแอดมินโดยตรง", ephemeral=True)
         return
@@ -404,7 +405,7 @@ async def suggest_cmd(interaction: discord.Interaction, suggestion: str):
     embed.timestamp = datetime.now(ICT)
     
     try:
-        await support_channel.send(embed=embed)
+        await suggest_channel.send(embed=embed)
         await interaction.response.send_message(
             "✅ ส่งคำแนะนำไปยังทีมงานแล้ว ขอบคุณที่ช่วยพัฒนาเซิร์ฟเวอร์! 🩵",
             ephemeral=True
