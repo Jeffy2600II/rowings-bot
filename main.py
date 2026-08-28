@@ -1,9 +1,9 @@
 # Synapse Bot — Rowings Universe
-# Architecture: bot-hosting.net (free tier) + Base44 (AI brain)
+# Architecture: Render (free tier) + Base44 (AI brain)
 
 """
 Synapse — Rowings Universe Community Bot
-Hybrid Architecture: bot-hosting.net + Base44
+Hybrid Architecture: Render + Base44
 
 Modules:
 1. Conversation Starter + Theme Day — จุดประเด็นอัตโนมัติ 1 ครั้ง/วัน 18:30
@@ -11,6 +11,7 @@ Modules:
 3. Slash Commands — /topic /stats /ping /faq /reload /poll
 4. New Member Helper — รีแอ็คชันอัตโนมัติใน #แนะนำตัว
 5. Monitoring — ส่งสถิติไป Base44 ทุกคืน
+6. Keep-Alive HTTP Server — bind port ให้ Render + self-ping กัน sleep
 """
 
 import os
@@ -18,6 +19,8 @@ import json
 import random
 import logging
 import asyncio
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -83,6 +86,25 @@ THEME_HEADERS = {
     "gaming":  {"emoji": "🎮", "title": "Gaming Talk"},
     "movie":   {"emoji": "🎭", "title": "Movie Night"},
 }
+
+# ─── Keep-Alive HTTP Server ─────────────────────────────
+
+class KeepAliveHandler(BaseHTTPRequestHandler):
+    """HTTP handler ง่ายๆ สำหรับ Render port binding + uptime monitor"""
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Synapse is alive")
+    
+    def log_message(self, format, *args):
+        pass  # ซ่อน HTTP log
+
+def start_http_server():
+    """เริ่ม HTTP server บน port ที่ Render กำหนด (หรือ 10000)"""
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), KeepAliveHandler)
+    server.serve_forever()
 
 # ─── Setup ──────────────────────────────────────────────
 
@@ -179,6 +201,7 @@ async def on_ready():
     conversation_starter.start()
     weekly_poll.start()
     daily_report.start()
+    keep_alive_ping.start()
 
 @bot.event
 async def on_message(message: discord.Message):
@@ -480,6 +503,19 @@ async def daily_report():
         except discord.HTTPException as e:
             log.error(f"Failed to send report: {e}")
 
+@tasks.loop(minutes=5)
+async def keep_alive_ping():
+    """Self-ping ทุก 5 นาที เพื่อกัน Render free tier sleep"""
+    import urllib.request
+    app_url = os.environ.get("RENDER_EXTERNAL_URL")
+    if not app_url:
+        return  # ไม่มี URL ข้าม (local dev หรือไม่ใช่ Render)
+    try:
+        urllib.request.urlopen(f"{app_url}/", timeout=10)
+        log.debug("Keep-alive ping sent")
+    except Exception as e:
+        log.debug(f"Keep-alive ping failed: {e}")
+
 # ─── Main ────────────────────────────────────────────────
 
 def main():
@@ -487,6 +523,13 @@ def main():
     if not token:
         log.error("DISCORD_BOT_TOKEN not set")
         return
+    
+    # เริ่ม HTTP server ใน background thread (สำหรับ Render port binding)
+    http_thread = threading.Thread(target=start_http_server, daemon=True)
+    http_thread.start()
+    log.info(f"HTTP keep-alive server started on port {os.environ.get('PORT', 10000)}")
+    
+    # เริ่ม Discord bot
     bot.run(token)
 
 if __name__ == "__main__":
