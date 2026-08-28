@@ -10,7 +10,7 @@ Modules:
 2. Weekly Poll — โหวตประจำสัปดาห์ทุกวันอาทิตย์ 19:00
 3. Slash Commands — /topic /stats /ping /faq /reload /poll /suggest
 4. New Member Helper — รีแอ็คชันอัตโนมัติใน #แนะนำตัว
-5. Monitoring — ส่งสถิติไป Base44 ทุกคืน
+5. Daily Report — สรุปสถิติเซิร์ฟเวอร์ทุกคืน 22:00 (สมาชิกใหม่ การเปลี่ยนแปลง คนจริง)
 6. Keep-Alive HTTP Server — bind port ให้ Render + self-ping กัน sleep
 """
 
@@ -49,6 +49,9 @@ CHANNELS = {
     "mod_log":   1238727178548674580,  # แตะ-หมดเวลา-แบน
     "support":   1460095076943397081,  # ติดต่อทีมซัพพอร์ต
     "suggest":   1542912628697993298,  # แนะนำ (ส่งคำแนะนำ)
+    "verify":    1460173581496619090,  # ยืนยันตัวตน
+    "roles":     1532359278512574585,  # จุดรับยศ
+    "rules":     1164949047384215632,  # กฎของเรา
 }
 
 # Role IDs (สำหรับ tag ใน conversation starter)
@@ -76,7 +79,7 @@ DAILY_SCHEDULE = {
     6: "meme",      # อาทิตย์ → มีม
 }
 
-# Theme Day headers — ทำให้ดูเป็นกิจกรรม ไม่ใช่แค่คำถาม
+# Theme Day headers
 THEME_HEADERS = {
     "general": {"emoji": "💬", "title": "Topic of the Day"},
     "anime":   {"emoji": "🌸", "title": "Anime Discussion"},
@@ -92,7 +95,6 @@ THEME_HEADERS = {
 # ─── Keep-Alive HTTP Server ─────────────────────────────
 
 class KeepAliveHandler(BaseHTTPRequestHandler):
-    """HTTP handler ง่ายๆ สำหรับ Render port binding + uptime monitor"""
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
@@ -100,10 +102,9 @@ class KeepAliveHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"Synapse is alive")
     
     def log_message(self, format, *args):
-        pass  # ซ่อน HTTP log
+        pass
 
 def start_http_server():
-    """เริ่ม HTTP server บน port ที่ Render กำหนด (หรือ 10000)"""
     port = int(os.environ.get("PORT", 10000))
     server = HTTPServer(("0.0.0.0", port), KeepAliveHandler)
     server.serve_forever()
@@ -121,28 +122,43 @@ bot = commands.Bot(
     help_command=None,
 )
 
-# ─── Topic Pool ──────────────────────────────────────────
+# ─── Data Files ─────────────────────────────────────────
 
 TOPICS_FILE = Path("topics.json")
+STATS_FILE = Path("stats.json")
 
 def load_topics() -> dict:
-    """โหลด topic pool จากไฟล์ JSON"""
     if not TOPICS_FILE.exists():
         return {}
     with open(TOPICS_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
 def save_topics(topics: dict):
-    """บันทึก topic pool"""
     with open(TOPICS_FILE, "w", encoding="utf-8") as f:
         json.dump(topics, f, ensure_ascii=False, indent=2)
 
-# ติดตาม topic ที่ใช้แล้ว (เก็บใน memory ระหว่าง session)
+def load_stats() -> dict:
+    """โหลดสถิติสะสม — ใช้เก็บจำนวนสมาชิกย้อนหลังและตัวนับรายวัน"""
+    if not STATS_FILE.exists():
+        return {}
+    with open(STATS_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_stats(data: dict):
+    with open(STATS_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+# ตัวนับรายวัน (เก็บใน memory + sync ลงไฟล์)
+daily_joins: int = 0
+daily_leaves: int = 0
+last_human_count: int = 0
+last_report_date: str = ""
+
+# ติดตาม topic ที่ใช้แล้ว
 used_topics: dict[str, list[int]] = {}
 used_polls: list[int] = []
 
 def pick_topic(category: str) -> dict | None:
-    """สุ่ม topic ที่ยังไม่เคยใช้จากหมวด"""
     topics = load_topics()
     pool = topics.get(category, [])
     if not pool:
@@ -160,7 +176,6 @@ def pick_topic(category: str) -> dict | None:
     return topic
 
 def pick_poll() -> dict | None:
-    """สุ่ม poll ที่ยังไม่เคยใช้"""
     topics = load_topics()
     pool = topics.get("poll", [])
     if not pool:
@@ -184,17 +199,49 @@ logging.basicConfig(
 )
 log = logging.getLogger("synapse")
 
+# ─── Thai Date Helper ───────────────────────────────────
+
+THAI_MONTHS = [
+    "ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.",
+    "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."
+]
+
+def thai_date(dt: datetime) -> str:
+    """แปลงวันที่เป็นรูปแบบไทย — เช่น 29 ส.ค. 2026"""
+    return f"{dt.day} {THAI_MONTHS[dt.month - 1]} {dt.year}"
+
 # ─── Events ──────────────────────────────────────────────
 
 @bot.event
 async def on_ready():
     log.info(f"Synapse online — {bot.user} (ID: {bot.user.id})")
     
+    # โหลดสถิติย้อนหลัง
+    global last_human_count, last_report_date, daily_joins, daily_leaves
+    stats = load_stats()
+    last_human_count = stats.get("last_human_count", 0)
+    last_report_date = stats.get("last_report_date", "")
+    daily_joins = stats.get("daily_joins", 0)
+    daily_leaves = stats.get("daily_leaves", 0)
+    
+    # ถ้าวันที่เปลี่ยน → รีเซ็ตตัวนับรายวัน
+    today = datetime.now(ICT).strftime("%Y-%m-%d")
+    if last_report_date != today:
+        daily_joins = 0
+        daily_leaves = 0
+    
+    # อัปเดตจำนวนคนจริงปัจจุบัน
+    guild = bot.get_guild(GUILD_ID)
+    if guild:
+        humans = sum(1 for m in guild.members if not m.bot)
+        if last_human_count == 0:
+            last_human_count = humans
+    
     # ซิงค์ slash commands
     try:
-        guild = discord.Object(id=GUILD_ID)
-        bot.tree.copy_global_to(guild=guild)
-        synced = await bot.tree.sync(guild=guild)
+        guild_obj = discord.Object(id=GUILD_ID)
+        bot.tree.copy_global_to(guild=guild_obj)
+        synced = await bot.tree.sync(guild=guild_obj)
         log.info(f"Synced {len(synced)} slash commands")
     except Exception as e:
         log.error(f"Failed to sync commands: {e}")
@@ -206,12 +253,27 @@ async def on_ready():
     keep_alive_ping.start()
 
 @bot.event
+async def on_member_join(member: discord.Member):
+    """นับสมาชิกใหม่ที่เข้ามา"""
+    global daily_joins
+    if not member.bot:
+        daily_joins += 1
+        log.info(f"Member joined: {member.name} (daily joins: {daily_joins})")
+
+@bot.event
+async def on_member_remove(member: discord.Member):
+    """นับสมาชิกที่จากไป"""
+    global daily_leaves
+    if not member.bot:
+        daily_leaves += 1
+        log.info(f"Member left: {member.name} (daily leaves: {daily_leaves})")
+
+@bot.event
 async def on_message(message: discord.Message):
-    # ข้ามข้อความของบอท
     if message.author.bot:
         return
     
-    # ถ้าเป็นข้อความแรกใน #แนะนำตัว → รีแอ็คชัน
+    # รีแอ็คชันอัตโนมัติใน #แนะนำตัว
     if message.channel.id == CHANNELS["intro"]:
         try:
             await message.add_reaction("👋")
@@ -242,7 +304,7 @@ async def topic_cmd(interaction: discord.Interaction, category: app_commands.Cho
     
     if not topic:
         await interaction.response.send_message(
-            f"ยังไม่มีหัวข้อในหมวด {cat} อยู่ใน pool 🥲", ephemeral=True
+            f"หมวดนี้ยังไม่มีหัวข้อใน pool เลย 🥲 ลองหมวดอื่นดูได้", ephemeral=True
         )
         return
     
@@ -257,7 +319,7 @@ async def topic_cmd(interaction: discord.Interaction, category: app_commands.Cho
     if isinstance(topic, dict) and topic.get("tag_role"):
         role_id = ROLE_TAGS.get(topic["tag_role"])
         if role_id:
-            embed.description = f"<@&{role_id}> {embed.description}"
+            embed.description = f"<@&{role_id}> {text}"
     
     embed.set_footer(text="Synapse • Rowings Universe")
     await interaction.response.send_message(embed=embed)
@@ -270,17 +332,19 @@ async def stats_cmd(interaction: discord.Interaction):
     online = sum(1 for m in guild.members if m.status != discord.Status.offline)
     bots = sum(1 for m in guild.members if m.bot)
     humans = total - bots
+    online_humans = sum(1 for m in guild.members if not m.bot and m.status != discord.Status.offline)
     
     embed = discord.Embed(
         title="📊 สถิติ Rowings Universe",
+        description=f"อัปเดตล่าสุด — {thai_date(datetime.now(ICT))}",
         color=0x5865F2
     )
-    embed.add_field(name="สมาชิกทั้งหมด", value=f"👥 {total}", inline=True)
-    embed.add_field(name="คนจริง", value=f"👤 {humans}", inline=True)
+    embed.add_field(name="คนจริงทั้งหมด", value=f"👤 {humans}", inline=True)
+    embed.add_field(name="ออนไลน์ตอนนี้", value=f"🟢 {online_humans}", inline=True)
     embed.add_field(name="บอท", value=f"🤖 {bots}", inline=True)
-    embed.add_field(name="ออนไลน์", value=f"🟢 {online}", inline=True)
-    embed.add_field(name="ช่อง", value=f"📁 {len(guild.channels)}", inline=True)
-    embed.add_field(name="ยศ", value=f"🏷️ {len(guild.roles)}", inline=True)
+    embed.add_field(name="ช่องทั้งหมด", value=f"📁 {len(guild.channels)}", inline=True)
+    embed.add_field(name="ยศทั้งหมด", value=f"🏷️ {len(guild.roles)}", inline=True)
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
     
     await interaction.response.send_message(embed=embed)
 
@@ -288,44 +352,56 @@ async def stats_cmd(interaction: discord.Interaction):
 async def ping_cmd(interaction: discord.Interaction):
     """เช็ค latency"""
     latency = round(bot.latency * 1000)
+    if latency < 200:
+        status = "แจ่มอยู่ 👍"
+    elif latency < 500:
+        status = "ปกติดี"
+    else:
+        status = "ช้าหน่อย แต่ยังทำงานได้"
     await interaction.response.send_message(
-        f"🏓 Pong! Latency: {latency}ms", ephemeral=True
+        f"🏓 Pong! Latency: {latency}ms — {status}", ephemeral=True
     )
 
 @bot.tree.command(name="faq", description="คำถามที่พบบ่อย")
 async def faq_cmd(interaction: discord.Interaction):
-    """FAQ"""
+    """FAQ — ใช้ channel mention แทนชื่อธรรมดา"""
     embed = discord.Embed(
         title="❓ คำถามที่พบบ่อย",
+        description="ไม่รู้จะเริ่มยังไง? ดูคู่มือสั้นๆ ได้ที่นี่เลย",
         color=0x5865F2
     )
     embed.add_field(
         name="🔐 ยืนยันตัวตน",
-        value="ไปที่ช่อง #ยืนยันตัวตน แล้วกดปุ่มยืนยัน",
+        value=f"ไปที่ <#{CHANNELS['verify']}> แล้วกดปุ่มยืนยันได้เลย",
         inline=False
     )
     embed.add_field(
         name="🏷️ รับยศ",
-        value="ไปที่ช่อง #จุดรับยศ แล้วรีแอ็คชัน emoji ที่ตรงกับความสนใจ",
+        value=f"ไปที่ <#{CHANNELS['roles']}> แล้วเลือก emoji ที่ตรงกับความสนใจของคุณ",
         inline=False
     )
     embed.add_field(
         name="👋 แนะนำตัว",
-        value="ไปที่ช่อง #แนะนำตัว แล้วเล่าเรื่องตัวเองสั้นๆ",
+        value=f"ไปที่ <#{CHANNELS['intro']}> แล้วเล่าเรื่องตัวเองสั้นๆ ให้คนในเซิร์ฟรู้จัก",
         inline=False
     )
     embed.add_field(
         name="📜 กฎของเรา",
-        value="อ่านได้ที่ช่อง #กฎของเรา",
+        value=f"อ่านได้ที่ <#{CHANNELS['rules']}>",
         inline=False
     )
+    embed.add_field(
+        name="💡 ส่งคำแนะนำ",
+        value="ใช้คำสั่ง `/suggest` ได้เลยทุกช่อง — ทีมงานจะรับเรื่องไปพิจารณา",
+        inline=False
+    )
+    embed.set_footer(text="Synapse • Rowings Universe")
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="reload", description="[Admin] โหลด topic pool ใหม่")
 async def reload_cmd(interaction: discord.Interaction):
-    """Admin only — reload topics"""
     if not any(r.id in ADMIN_ROLES for r in interaction.user.roles):
-        await interaction.response.send_message("คำสั่งนี้สำหรับ Admin เท่านั้น", ephemeral=True)
+        await interaction.response.send_message("คำสั่งนี้สำหรับ Admin เท่านั้นนะ", ephemeral=True)
         return
     
     global used_topics, used_polls
@@ -345,20 +421,18 @@ async def reload_cmd(interaction: discord.Interaction):
     options="ตัวเลือก คั่นด้วย | (เช่น แมว|หมา|หนู)"
 )
 async def poll_cmd(interaction: discord.Interaction, question: str, options: str):
-    """สร้าง poll แบบ reaction-based"""
     if not any(r.id in ADMIN_ROLES for r in interaction.user.roles):
-        await interaction.response.send_message("คำสั่งนี้สำหรับ Admin เท่านั้น", ephemeral=True)
+        await interaction.response.send_message("คำสั่งนี้สำหรับ Admin เท่านั้นนะ", ephemeral=True)
         return
     
     choices = [o.strip() for o in options.split("|") if o.strip()]
     if len(choices) < 2:
-        await interaction.response.send_message("ต้องมีอย่างน้อย 2 ตัวเลือก", ephemeral=True)
+        await interaction.response.send_message("ต้องมีอย่างน้อย 2 ตัวเลือกนะ", ephemeral=True)
         return
     if len(choices) > 10:
         await interaction.response.send_message("ได้สูงสุด 10 ตัวเลือก", ephemeral=True)
         return
     
-    # Emoji สำหรับตัวเลือก
     poll_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
     
     description = "\n\n".join(
@@ -367,8 +441,8 @@ async def poll_cmd(interaction: discord.Interaction, question: str, options: str
     )
     
     embed = discord.Embed(
-        title="📊 โหวตประจำสัปดาห์",
-        description=f"**{question}**\n\n{description}\n\n*กด reaction ที่ตัวเลือกของคุณ*",
+        title="📊 โหวต",
+        description=f"**{question}**\n\n{description}\n\n*กด reaction ที่ตัวเลือกของคุณได้เลย*",
         color=0x5865F2
     )
     embed.set_footer(text=f"โดย {interaction.user.display_name} • Synapse")
@@ -385,10 +459,9 @@ async def poll_cmd(interaction: discord.Interaction, question: str, options: str
 )
 async def suggest_cmd(interaction: discord.Interaction, suggestion: str):
     """สมาชิกส่งคำแนะนำไปยังช่องแนะนำ"""
-    # ส่งไปช่อง support
     suggest_channel = bot.get_channel(CHANNELS["suggest"])
     if not suggest_channel:
-        await interaction.response.send_message("ไม่พบช่องรับคำแนะนำ ติดต่อแอดมินโดยตรง", ephemeral=True)
+        await interaction.response.send_message("ไม่พบช่องรับคำแนะนำ ติดต่อแอดมินโดยตรงนะ", ephemeral=True)
         return
     
     embed = discord.Embed(
@@ -412,7 +485,7 @@ async def suggest_cmd(interaction: discord.Interaction, suggestion: str):
         )
         log.info(f"Suggestion from {interaction.user}: {suggestion[:50]}...")
     except discord.HTTPException as e:
-        await interaction.response.send_message("ส่งไม่สำเร็จ ลองใหม่อีกครั้ง", ephemeral=True)
+        await interaction.response.send_message("ส่งไม่สำเร็จ ลองใหม่อีกครั้งนะ", ephemeral=True)
         log.error(f"Failed to send suggestion: {e}")
 
 # ─── Scheduled Tasks ────────────────────────────────────
@@ -422,7 +495,6 @@ async def conversation_starter():
     """โพสต์ conversation starter วันละ 1 ครั้ง เวลา 18:30 ICT"""
     now = datetime.now(ICT)
     
-    # 18:30 ทุกวัน
     if now.hour == 18 and now.minute == 30:
         day_of_week = now.weekday()
         category = DAILY_SCHEDULE.get(day_of_week, "general")
@@ -438,7 +510,6 @@ async def conversation_starter():
             log.error(f"Cannot find channel: {channel_id}")
             return
         
-        # สร้าง embed แบบ Theme Day
         header = THEME_HEADERS.get(category, {"emoji": "💬", "title": "Topic of the Day"})
         text = topic.get("text", topic) if isinstance(topic, dict) else topic
         tag_role = topic.get("tag_role") if isinstance(topic, dict) else None
@@ -466,7 +537,6 @@ async def weekly_poll():
     """โพสต์ poll ประจำสัปดาห์ ทุกวันอาทิตย์ 19:00 ICT"""
     now = datetime.now(ICT)
     
-    # อาทิตย์ 19:00
     if now.weekday() == 6 and now.hour == 19 and now.minute == 0:
         poll_data = pick_poll()
         if not poll_data:
@@ -494,7 +564,7 @@ async def weekly_poll():
         
         embed = discord.Embed(
             title="📊 โหวตประจำสัปดาห์",
-            description=f"**{question}**\n\n{description}\n\n*กด reaction ที่ตัวเลือกของคุณ*",
+            description=f"**{question}**\n\n{description}\n\n*กด reaction ที่ตัวเลือกของคุณได้เลย*",
             color=0x5865F2
         )
         embed.set_footer(text="Synapse • Rowings Universe — Weekly Poll")
@@ -509,7 +579,9 @@ async def weekly_poll():
 
 @tasks.loop(minutes=1)
 async def daily_report():
-    """ส่งสถิติไป mod_log ทุกคืน 22:00 ICT"""
+    """ส่งสรุปสถิติไป mod_log ทุกคืน 22:00 ICT — สมาชิกใหม่ การเปลี่ยนแปลง คนจริง"""
+    global last_human_count, last_report_date, daily_joins, daily_leaves
+    
     now = datetime.now(ICT)
     
     if now.hour == 22 and now.minute == 0:
@@ -517,29 +589,67 @@ async def daily_report():
         if not guild:
             return
         
-        total = guild.member_count
-        online = sum(1 for m in guild.members if m.status != discord.Status.offline)
-        bots = sum(1 for m in guild.members if m.bot)
-        humans = total - bots
-        
         channel = bot.get_channel(CHANNELS["mod_log"])
         if not channel:
             return
         
+        # นับคนจริงและออนไลน์ (ไม่นับบอท)
+        humans = sum(1 for m in guild.members if not m.bot)
+        online_humans = sum(1 for m in guild.members if not m.bot and m.status != discord.Status.offline)
+        
+        # คำนวณการเปลี่ยนแปลง
+        net_change = humans - last_human_count
+        prev_count = last_human_count if last_human_count > 0 else humans
+        
+        # สร้างสรุป
+        date_str = thai_date(now)
+        
         embed = discord.Embed(
-            title="📊 รายงานประจำวัน",
+            title="📊 สรุปประจำวัน",
+            description=f"**{date_str}**",
             color=0x5865F2,
-            timestamp=datetime.now(ICT)
+            timestamp=now
         )
-        embed.add_field(name="สมาชิกทั้งหมด", value=f"👥 {total}", inline=True)
-        embed.add_field(name="คนจริง", value=f"👤 {humans}", inline=True)
-        embed.add_field(name="ออนไลน์", value=f"🟢 {online}", inline=True)
+        
+        # สมาชิกใหม่และการจากไป
+        join_text = f"➕ {daily_joins} คน" if daily_joins > 0 else "ไม่มี"
+        leave_text = f"➖ {daily_leaves} คน" if daily_leaves > 0 else "ไม่มี"
+        
+        if net_change > 0:
+            net_text = f"📈 +{net_change} คน"
+        elif net_change < 0:
+            net_text = f"📉 {net_change} คน"
+        else:
+            net_text = "➖ ไม่เปลี่ยนแปลง"
+        
+        embed.add_field(name="สมาชิกใหม่วันนี้", value=join_text, inline=True)
+        embed.add_field(name="จากไป", value=leave_text, inline=True)
+        embed.add_field(name="สุทธิ", value=net_text, inline=True)
+        
+        # สถิติรวม
+        embed.add_field(name="คนจริงทั้งหมด", value=f"👤 {humans}", inline=True)
+        embed.add_field(name="ออนไลน์ตอนนี้", value=f"🟢 {online_humans}", inline=True)
+        embed.add_field(name="เมื่อวาน", value=f"👤 {prev_count}", inline=True)
+        
+        embed.set_footer(text="Synapse • Rowings Universe — Daily Report")
         
         try:
             await channel.send(embed=embed)
-            log.info("Daily report sent")
+            log.info(f"Daily report sent — joins: {daily_joins}, leaves: {daily_leaves}, net: {net_change}")
         except discord.HTTPException as e:
             log.error(f"Failed to send report: {e}")
+        
+        # บันทึกและรีเซ็ต
+        last_human_count = humans
+        last_report_date = now.strftime("%Y-%m-%d")
+        daily_joins = 0
+        daily_leaves = 0
+        save_stats({
+            "last_human_count": last_human_count,
+            "last_report_date": last_report_date,
+            "daily_joins": 0,
+            "daily_leaves": 0,
+        })
 
 @tasks.loop(minutes=5)
 async def keep_alive_ping():
@@ -547,7 +657,7 @@ async def keep_alive_ping():
     import urllib.request
     app_url = os.environ.get("RENDER_EXTERNAL_URL")
     if not app_url:
-        return  # ไม่มี URL ข้าม (local dev หรือไม่ใช่ Render)
+        return
     try:
         urllib.request.urlopen(f"{app_url}/", timeout=10)
         log.debug("Keep-alive ping sent")
@@ -562,12 +672,10 @@ def main():
         log.error("DISCORD_BOT_TOKEN not set")
         return
     
-    # เริ่ม HTTP server ใน background thread (สำหรับ Render port binding)
     http_thread = threading.Thread(target=start_http_server, daemon=True)
     http_thread.start()
     log.info(f"HTTP keep-alive server started on port {os.environ.get('PORT', 10000)}")
     
-    # เริ่ม Discord bot
     bot.run(token)
 
 if __name__ == "__main__":
