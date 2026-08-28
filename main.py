@@ -387,7 +387,7 @@ async def suggest_cmd(interaction: discord.Interaction, suggestion: str):
     """สมาชิกส่งคำแนะนำไปยังช่องแนะนำ"""
     # ส่งไปช่อง support
     suggest_channel = bot.get_channel(CHANNELS["suggest"])
-    if not support_channel:
+    if not suggest_channel:
         await interaction.response.send_message("ไม่พบช่องรับคำแนะนำ ติดต่อแอดมินโดยตรง", ephemeral=True)
         return
     
