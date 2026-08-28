@@ -6,10 +6,11 @@ Synapse — Rowings Universe Community Bot
 Hybrid Architecture: bot-hosting.net + Base44
 
 Modules:
-1. Conversation Starter — จุดประเด็นอัตโนมัติ 1 ครั้ง/วัน
-2. Slash Commands — /topic /stats /ping /faq /reload
-3. New Member Helper — รีแอ็คชันอัตโนมัติใน #แนะนำตัว
-4. Monitoring — ส่งสถิติไป Base44 ทุกคืน
+1. Conversation Starter + Theme Day — จุดประเด็นอัตโนมัติ 1 ครั้ง/วัน 18:30
+2. Weekly Poll — โหวตประจำสัปดาห์ทุกวันอาทิตย์ 19:00
+3. Slash Commands — /topic /stats /ping /faq /reload /poll
+4. New Member Helper — รีแอ็คชันอัตโนมัติใน #แนะนำตัว
+5. Monitoring — ส่งสถิติไป Base44 ทุกคืน
 """
 
 import os
@@ -36,12 +37,11 @@ CHANNELS = {
     "welcome":   1532258749308338236,  # Welcome
     "intro":     1540955038153707583,  # แนะนำตัว
     "anime":     1219894750342021160,  # อนิเมะ
-    "gaming":    1219891903865163787,  # งานศิลปะ (ไม่ใช่เกม แต่อยู่ในหมวดเดียวกัน)
+    "art":       1219891903865163787,  # งานศิลปะ
     "movie":     1220422352085581844,  # ภาพยนตร์และซีรีส์
     "music":     1220509773406142474,  # เพลงโปรดวันนี้
     "food":      1532279261707370546,  # กินอะไรดีวันนี้
     "pets":      1532279421095116811,  # สมาคมทาสแมว-ทาสหมา
-    "art":       1219891903865163787,  # งานศิลปะ
     "meme":      1219894681622810644,  # มีม
     "mod_log":   1238727178548674580,  # แตะ-หมดเวลา-แบน
 }
@@ -64,11 +64,24 @@ ADMIN_ROLES = {1219406400120426576, 1173176875183521834}  # Owner, Core Team
 DAILY_SCHEDULE = {
     0: "general",   # จันทร์ → พูดคุยทั่วไป
     1: "anime",      # อังคาร → อนิเมะ
-    2: "gaming",     # พุธ → เกม (ใช้ช่อง art ชั่วคราว เพราะไม่มีช่องเกมเฉพาะ)
+    2: "art",       # พุธ → งานศิลปะ
     3: "music",     # พฤหัส → เพลง
     4: "food",      # ศุกร์ → อาหาร
     5: "pets",      # เสาร์ → สัตว์เลี้ยง
     6: "meme",      # อาทิตย์ → มีม
+}
+
+# Theme Day headers — ทำให้ดูเป็นกิจกรรม ไม่ใช่แค่คำถาม
+THEME_HEADERS = {
+    "general": {"emoji": "💬", "title": "Topic of the Day"},
+    "anime":   {"emoji": "🌸", "title": "Anime Discussion"},
+    "art":     {"emoji": "🎨", "title": "Art Showcase"},
+    "music":   {"emoji": "🎧", "title": "Music Monday"},
+    "food":    {"emoji": "🍔", "title": "Foodie Friday"},
+    "pets":    {"emoji": "🐱", "title": "Pet Saturday"},
+    "meme":    {"emoji": "🤔", "title": "Meme Sunday"},
+    "gaming":  {"emoji": "🎮", "title": "Gaming Talk"},
+    "movie":   {"emoji": "🎭", "title": "Movie Night"},
 }
 
 # ─── Setup ──────────────────────────────────────────────
@@ -102,6 +115,7 @@ def save_topics(topics: dict):
 
 # ติดตาม topic ที่ใช้แล้ว (เก็บใน memory ระหว่าง session)
 used_topics: dict[str, list[int]] = {}
+used_polls: list[int] = []
 
 def pick_topic(category: str) -> dict | None:
     """สุ่ม topic ที่ยังไม่เคยใช้จากหมวด"""
@@ -114,13 +128,28 @@ def pick_topic(category: str) -> dict | None:
     available = [(i, t) for i, t in enumerate(pool) if i not in used]
     
     if not available:
-        # รีเซ็ตถ้าใช้ครบแล้ว
         used_topics[category] = []
         available = list(enumerate(pool))
     
     idx, topic = random.choice(available)
     used_topics.setdefault(category, []).append(idx)
     return topic
+
+def pick_poll() -> dict | None:
+    """สุ่ม poll ที่ยังไม่เคยใช้"""
+    topics = load_topics()
+    pool = topics.get("poll", [])
+    if not pool:
+        return None
+    
+    available = [(i, p) for i, p in enumerate(pool) if i not in used_polls]
+    if not available:
+        used_polls.clear()
+        available = list(enumerate(pool))
+    
+    idx, poll = random.choice(available)
+    used_polls.append(idx)
+    return poll
 
 # ─── Logging ─────────────────────────────────────────────
 
@@ -148,6 +177,7 @@ async def on_ready():
     
     # เริ่ม scheduled tasks
     conversation_starter.start()
+    weekly_poll.start()
     daily_report.start()
 
 @bot.event
@@ -191,9 +221,12 @@ async def topic_cmd(interaction: discord.Interaction, category: app_commands.Cho
         )
         return
     
+    header = THEME_HEADERS.get(cat, {"emoji": "💬", "title": "Topic"})
+    text = topic.get("text", topic) if isinstance(topic, dict) else topic
+    
     embed = discord.Embed(
-        title="💬 หัวข้อคุย",
-        description=topic.get("text", topic) if isinstance(topic, dict) else topic,
+        title=f"{header['emoji']} {header['title']}",
+        description=text,
         color=0x5865F2
     )
     if isinstance(topic, dict) and topic.get("tag_role"):
@@ -201,6 +234,7 @@ async def topic_cmd(interaction: discord.Interaction, category: app_commands.Cho
         if role_id:
             embed.description = f"<@&{role_id}> {embed.description}"
     
+    embed.set_footer(text="Synapse • Rowings Universe")
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="stats", description="ดูสถิติเซิร์ฟเวอร์")
@@ -269,8 +303,9 @@ async def reload_cmd(interaction: discord.Interaction):
         await interaction.response.send_message("คำสั่งนี้สำหรับ Admin เท่านั้น", ephemeral=True)
         return
     
-    global used_topics
+    global used_topics, used_polls
     used_topics = {}
+    used_polls = []
     topics = load_topics()
     total = sum(len(v) for v in topics.values())
     
@@ -278,6 +313,46 @@ async def reload_cmd(interaction: discord.Interaction):
         f"✅ โหลด topic pool ใหม่แล้ว — {total} หัวข้อ จาก {len(topics)} หมวด",
         ephemeral=True
     )
+
+@bot.tree.command(name="poll", description="[Admin] สร้างโหวตในช่องปัจจุบัน")
+@app_commands.describe(
+    question="คำถามสำหรับโหวต",
+    options="ตัวเลือก คั่นด้วย | (เช่น แมว|หมา|หนู)"
+)
+async def poll_cmd(interaction: discord.Interaction, question: str, options: str):
+    """สร้าง poll แบบ reaction-based"""
+    if not any(r.id in ADMIN_ROLES for r in interaction.user.roles):
+        await interaction.response.send_message("คำสั่งนี้สำหรับ Admin เท่านั้น", ephemeral=True)
+        return
+    
+    choices = [o.strip() for o in options.split("|") if o.strip()]
+    if len(choices) < 2:
+        await interaction.response.send_message("ต้องมีอย่างน้อย 2 ตัวเลือก", ephemeral=True)
+        return
+    if len(choices) > 10:
+        await interaction.response.send_message("ได้สูงสุด 10 ตัวเลือก", ephemeral=True)
+        return
+    
+    # Emoji สำหรับตัวเลือก
+    poll_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+    
+    description = "\n\n".join(
+        f"{poll_emojis[i]} **{choice}**"
+        for i, choice in enumerate(choices)
+    )
+    
+    embed = discord.Embed(
+        title="📊 โหวตประจำสัปดาห์",
+        description=f"**{question}**\n\n{description}\n\n*กด reaction ที่ตัวเลือกของคุณ*",
+        color=0x5865F2
+    )
+    embed.set_footer(text=f"โดย {interaction.user.display_name} • Synapse")
+    
+    await interaction.response.send_message(embed=embed)
+    msg = await interaction.original_response()
+    
+    for i in range(len(choices)):
+        await msg.add_reaction(poll_emojis[i])
 
 # ─── Scheduled Tasks ────────────────────────────────────
 
@@ -302,31 +377,78 @@ async def conversation_starter():
             log.error(f"Cannot find channel: {channel_id}")
             return
         
-        # สร้าง embed
+        # สร้าง embed แบบ Theme Day
+        header = THEME_HEADERS.get(category, {"emoji": "💬", "title": "Topic of the Day"})
         text = topic.get("text", topic) if isinstance(topic, dict) else topic
         tag_role = topic.get("tag_role") if isinstance(topic, dict) else None
         
-        content = ""
-        if tag_role and tag_role in ROLE_TAGS:
-            content = f"<@&{ROLE_TAGS[tag_role]}> "
-        
         embed = discord.Embed(
-            title="💬 หัวข้อคุยวันนี้",
+            title=f"{header['emoji']} {header['title']}",
             description=text,
-            color=0x5865F2,
-            timestamp=now,
+            color=0x5865F2
         )
-        embed.set_footer(text="Rowings Universe • พูดคุยกันเถอะ!")
+        if tag_role:
+            role_id = ROLE_TAGS.get(tag_role)
+            if role_id:
+                embed.description = f"<@&{role_id}> {text}"
+        
+        embed.set_footer(text="Synapse • Rowings Universe")
         
         try:
-            await channel.send(content=content, embed=embed)
-            log.info(f"Posted conversation starter in #{channel.name}: {text[:50]}...")
+            await channel.send(embed=embed)
+            log.info(f"Posted theme day '{header['title']}' in #{channel.name}")
         except discord.HTTPException as e:
             log.error(f"Failed to post: {e}")
 
 @tasks.loop(minutes=1)
+async def weekly_poll():
+    """โพสต์ poll ประจำสัปดาห์ ทุกวันอาทิตย์ 19:00 ICT"""
+    now = datetime.now(ICT)
+    
+    # อาทิตย์ 19:00
+    if now.weekday() == 6 and now.hour == 19 and now.minute == 0:
+        poll_data = pick_poll()
+        if not poll_data:
+            log.warning("No poll data available")
+            return
+        
+        channel = bot.get_channel(CHANNELS["general"])
+        if not channel:
+            log.error("Cannot find general channel")
+            return
+        
+        question = poll_data.get("question", "โหวตประจำสัปดาห์")
+        options = poll_data.get("options", [])
+        
+        if len(options) < 2:
+            log.warning("Poll has fewer than 2 options")
+            return
+        
+        poll_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+        
+        description = "\n\n".join(
+            f"{poll_emojis[i]} **{opt}**"
+            for i, opt in enumerate(options[:10])
+        )
+        
+        embed = discord.Embed(
+            title="📊 โหวตประจำสัปดาห์",
+            description=f"**{question}**\n\n{description}\n\n*กด reaction ที่ตัวเลือกของคุณ*",
+            color=0x5865F2
+        )
+        embed.set_footer(text="Synapse • Rowings Universe — Weekly Poll")
+        
+        try:
+            msg = await channel.send(embed=embed)
+            for i in range(len(options[:10])):
+                await msg.add_reaction(poll_emojis[i])
+            log.info(f"Posted weekly poll: {question}")
+        except discord.HTTPException as e:
+            log.error(f"Failed to post poll: {e}")
+
+@tasks.loop(minutes=1)
 async def daily_report():
-    """ส่งสถิติประจำวันไป mod-log ทุกคืน 22:00 ICT"""
+    """ส่งสถิติไป mod_log ทุกคืน 22:00 ICT"""
     now = datetime.now(ICT)
     
     if now.hour == 22 and now.minute == 0:
@@ -337,32 +459,34 @@ async def daily_report():
         total = guild.member_count
         online = sum(1 for m in guild.members if m.status != discord.Status.offline)
         bots = sum(1 for m in guild.members if m.bot)
+        humans = total - bots
         
         channel = bot.get_channel(CHANNELS["mod_log"])
-        if channel:
-            embed = discord.Embed(
-                title="📊 สรุปประจำวัน",
-                color=0x5865F2,
-                timestamp=now,
-            )
-            embed.add_field(name="สมาชิกทั้งหมด", value=str(total), inline=True)
-            embed.add_field(name="ออนไลน์", value=str(online), inline=True)
-            embed.add_field(name="บอท", value=str(bots), inline=True)
-            
-            try:
-                await channel.send(embed=embed)
-                log.info("Daily report sent to mod-log")
-            except discord.HTTPException as e:
-                log.error(f"Failed to send daily report: {e}")
+        if not channel:
+            return
+        
+        embed = discord.Embed(
+            title="📊 รายงานประจำวัน",
+            color=0x5865F2,
+            timestamp=datetime.now(ICT)
+        )
+        embed.add_field(name="สมาชิกทั้งหมด", value=f"👥 {total}", inline=True)
+        embed.add_field(name="คนจริง", value=f"👤 {humans}", inline=True)
+        embed.add_field(name="ออนไลน์", value=f"🟢 {online}", inline=True)
+        
+        try:
+            await channel.send(embed=embed)
+            log.info("Daily report sent")
+        except discord.HTTPException as e:
+            log.error(f"Failed to send report: {e}")
 
-# ─── Startup ─────────────────────────────────────────────
+# ─── Main ────────────────────────────────────────────────
 
 def main():
-    token = os.environ.get("DISCORD_BOT_TOKEN")
+    token = os.environ.get("DISCORD_BOT_TOKEN", "")
     if not token:
-        log.error("DISCORD_BOT_TOKEN not set!")
+        log.error("DISCORD_BOT_TOKEN not set")
         return
-    
     bot.run(token)
 
 if __name__ == "__main__":
