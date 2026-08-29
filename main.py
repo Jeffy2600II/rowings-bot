@@ -213,18 +213,19 @@ def thai_date(dt: datetime) -> str:
 
 # ─── Helper: Guild with counts ─────────────────────────────
 
-async def fetch_guild_with_counts(guild_id: int) -> dict | None:
-    """ดึงข้อมูลเซิร์ฟเวอร์พร้อมจำนวนออนไลน์จาก REST API — fallback เมื่อ presences intent ไม่พร้อม"""
-    import urllib.request, urllib.error
-    token = os.environ.get("DISCORD_BOT_TOKEN", "")
-    url = f"https://discord.com/api/v10/guilds/{guild_id}?with_counts=true"
-    req = urllib.request.Request(url, headers={"Authorization": f"Bot {token}"})
+async def get_online_count() -> int:
+    """ดึงจำนวนออนไลน์จาก Discord REST API — เชื่อถือได้แม้ไม่มี presences intent"""
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read())
+        g = await bot.fetch_guild(GUILD_ID, with_counts=True)
+        if g and g.approximate_presence_count is not None:
+            return g.approximate_presence_count
     except Exception as e:
-        log.warning(f"Failed to fetch guild with counts: {e}")
-        return None
+        log.warning(f"fetch_guild with_counts failed: {e}")
+    # Fallback: นับจาก cache
+    guild = bot.get_guild(GUILD_ID)
+    if guild:
+        return sum(1 for m in guild.members if m.status != discord.Status.offline)
+    return 0
 
 # ─── Events ──────────────────────────────────────────────
 
@@ -349,12 +350,7 @@ async def stats_cmd(interaction: discord.Interaction):
     humans = total - bots
     
     # ใช้ REST API สำหรับจำนวนออนไลน์ที่แม่นยำ
-    guild_data = await fetch_guild_with_counts(GUILD_ID)
-    if guild_data:
-        online_total = guild_data.get("approximate_presence_count", 0)
-    else:
-        # Fallback: นับจาก cache (อาจไม่แม่นยำหากไม่มี presences intent)
-        online_total = sum(1 for m in guild.members if m.status != discord.Status.offline)
+    online_total = await get_online_count()
     online_humans = max(0, online_total - bots)
     
     embed = discord.Embed(
@@ -545,22 +541,47 @@ async def userinfo_cmd(interaction: discord.Interaction, member: discord.Member 
     if len(roles_str) > 1024:
         roles_str = roles_str[:1021] + "..."
     
-    # สถานะ (ต้องมี GUILD_PRESENCES intent ถึงจะแม่นยำ)
-    if target.status != discord.Status.offline:
-        status_map = {
-            discord.Status.online: "🟢 ออนไลน์",
-            discord.Status.idle: "🟡 ไม่อยู่",
-            discord.Status.dnd: "🔴 ห้ามรบกวน",
-        }
-        status_str = status_map.get(target.status, "🟢 ออนไลน์")
-    else:
-        # ถ้าเป็น offline อาจเป็นเพราะ intent ไม่พร้อม หรือออฟไลน์จริง
-        # ตรวจจาก desktop/mobile/web status ถ้ามี
-        raw_status = str(target.raw_status) if hasattr(target, 'raw_status') else 'offline'
-        if raw_status != 'offline':
-            status_str = "🟢 ออนไลน์"
+    # สถานะ — ใช้หลายชั้นตรวจสอบ
+    # 1. ตรวจจาก client_status (desktop/mobile/web) ที่แม่นยำกว่า .status
+    is_online = False
+    status_detail = ""
+    try:
+        cs = target.status
+        if cs != discord.Status.offline:
+            is_online = True
+            status_map = {
+                discord.Status.online: "🟢 ออนไลน์",
+                discord.Status.idle: "🟡 ไม่อยู่",
+                discord.Status.dnd: "🔴 ห้ามรบกวน",
+            }
+            status_detail = status_map.get(cs, "🟢 ออนไลน์")
         else:
-            status_str = "⚫ ออฟไลน์ (หรือซ่อนสถานะ)"
+            # 2. ตรวจจาก client_status รายดีเทล
+            client_status = getattr(target, 'client_status', None)
+            if client_status:
+                active = []
+                if client_status.desktop != discord.Status.offline:
+                    active.append("💻")
+                if client_status.mobile != discord.Status.offline:
+                    active.append("📱")
+                if client_status.web != discord.Status.offline:
+                    active.append("🌐")
+                if active:
+                    is_online = True
+                    status_detail = f"🟢 ออนไลน์ ({' '.join(active)})"
+                else:
+                    status_detail = "⚫ ออฟไลน์"
+            else:
+                # 3. ถ้าไม่มีข้อมูล client_status ให้เช็คจาก raw_status
+                raw = getattr(target, 'raw_status', 'offline')
+                if raw and raw != 'offline':
+                    is_online = True
+                    status_detail = "🟢 ออนไลน์"
+                else:
+                    status_detail = "⚫ ออฟไลน์ (หรือซ่อนสถานะ)"
+    except Exception:
+        status_detail = "⚪ ไม่สามารถตรวจสอบได้"
+    status_str = status_detail
     
     embed = discord.Embed(
         title=f"👤 ข้อมูลสมาชิก — {target.display_name}",
@@ -609,11 +630,7 @@ async def serverinfo_cmd(interaction: discord.Interaction):
     bots = sum(1 for m in guild.members if m.bot)
     
     # ใช้ REST API สำหรับจำนวนออนไลน์
-    guild_data = await fetch_guild_with_counts(GUILD_ID)
-    if guild_data:
-        online_total = guild_data.get("approximate_presence_count", 0)
-    else:
-        online_total = sum(1 for m in guild.members if m.status != discord.Status.offline)
+    online_total = await get_online_count()
     online_humans = max(0, online_total - bots)
     online_bots = 0  # ไม่สามารถแยกบอทออนไลน์ได้แม่นยำจาก REST API
     
@@ -791,13 +808,9 @@ async def daily_report():
         # นับคนจริงและออนไลน์ (ไม่นับบอท)
         humans = sum(1 for m in guild.members if not m.bot)
         # ใช้ REST API สำหรับจำนวนออนไลน์
-        import asyncio as _aio
-        guild_data = await fetch_guild_with_counts(GUILD_ID)
-        if guild_data:
-            online_total = guild_data.get("approximate_presence_count", 0)
-            online_humans = max(0, online_total - sum(1 for m in guild.members if m.bot))
-        else:
-            online_humans = sum(1 for m in guild.members if not m.bot and m.status != discord.Status.offline)
+        online_total = await get_online_count()
+        bots_count = sum(1 for m in guild.members if m.bot)
+        online_humans = max(0, online_total - bots_count)
         
         # คำนวณการเปลี่ยนแปลง
         net_change = humans - last_human_count
