@@ -115,6 +115,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 intents.reactions = True
+intents.presences = True
 
 bot = commands.Bot(
     command_prefix="!",
@@ -209,6 +210,21 @@ THAI_MONTHS = [
 def thai_date(dt: datetime) -> str:
     """แปลงวันที่เป็นรูปแบบไทย — เช่น 29 ส.ค. 2026"""
     return f"{dt.day} {THAI_MONTHS[dt.month - 1]} {dt.year}"
+
+# ─── Helper: Guild with counts ─────────────────────────────
+
+async def fetch_guild_with_counts(guild_id: int) -> dict | None:
+    """ดึงข้อมูลเซิร์ฟเวอร์พร้อมจำนวนออนไลน์จาก REST API — fallback เมื่อ presences intent ไม่พร้อม"""
+    import urllib.request, urllib.error
+    token = os.environ.get("DISCORD_BOT_TOKEN", "")
+    url = f"https://discord.com/api/v10/guilds/{guild_id}?with_counts=true"
+    req = urllib.request.Request(url, headers={"Authorization": f"Bot {token}"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read())
+    except Exception as e:
+        log.warning(f"Failed to fetch guild with counts: {e}")
+        return None
 
 # ─── Events ──────────────────────────────────────────────
 
@@ -329,10 +345,17 @@ async def stats_cmd(interaction: discord.Interaction):
     """ดูสถิติเซิร์ฟเวอร์"""
     guild = interaction.guild
     total = guild.member_count
-    online = sum(1 for m in guild.members if m.status != discord.Status.offline)
     bots = sum(1 for m in guild.members if m.bot)
     humans = total - bots
-    online_humans = sum(1 for m in guild.members if not m.bot and m.status != discord.Status.offline)
+    
+    # ใช้ REST API สำหรับจำนวนออนไลน์ที่แม่นยำ
+    guild_data = await fetch_guild_with_counts(GUILD_ID)
+    if guild_data:
+        online_total = guild_data.get("approximate_presence_count", 0)
+    else:
+        # Fallback: นับจาก cache (อาจไม่แม่นยำหากไม่มี presences intent)
+        online_total = sum(1 for m in guild.members if m.status != discord.Status.offline)
+    online_humans = max(0, online_total - bots)
     
     embed = discord.Embed(
         title="📊 สถิติ Rowings Universe",
@@ -522,14 +545,22 @@ async def userinfo_cmd(interaction: discord.Interaction, member: discord.Member 
     if len(roles_str) > 1024:
         roles_str = roles_str[:1021] + "..."
     
-    # สถานะ
-    status_map = {
-        discord.Status.online: "🟢 ออนไลน์",
-        discord.Status.idle: "🟡 ไม่อยู่",
-        discord.Status.dnd: "🔴 ห้ามรบกวน",
-        discord.Status.offline: "⚫ ออฟไลน์",
-    }
-    status_str = status_map.get(target.status, "ไม่ทราบ")
+    # สถานะ (ต้องมี GUILD_PRESENCES intent ถึงจะแม่นยำ)
+    if target.status != discord.Status.offline:
+        status_map = {
+            discord.Status.online: "🟢 ออนไลน์",
+            discord.Status.idle: "🟡 ไม่อยู่",
+            discord.Status.dnd: "🔴 ห้ามรบกวน",
+        }
+        status_str = status_map.get(target.status, "🟢 ออนไลน์")
+    else:
+        # ถ้าเป็น offline อาจเป็นเพราะ intent ไม่พร้อม หรือออฟไลน์จริง
+        # ตรวจจาก desktop/mobile/web status ถ้ามี
+        raw_status = str(target.raw_status) if hasattr(target, 'raw_status') else 'offline'
+        if raw_status != 'offline':
+            status_str = "🟢 ออนไลน์"
+        else:
+            status_str = "⚫ ออฟไลน์ (หรือซ่อนสถานะ)"
     
     embed = discord.Embed(
         title=f"👤 ข้อมูลสมาชิก — {target.display_name}",
@@ -576,8 +607,15 @@ async def serverinfo_cmd(interaction: discord.Interaction):
     # นับสมาชิก
     humans = sum(1 for m in guild.members if not m.bot)
     bots = sum(1 for m in guild.members if m.bot)
-    online_humans = sum(1 for m in guild.members if not m.bot and m.status != discord.Status.offline)
-    online_bots = sum(1 for m in guild.members if m.bot and m.status != discord.Status.offline)
+    
+    # ใช้ REST API สำหรับจำนวนออนไลน์
+    guild_data = await fetch_guild_with_counts(GUILD_ID)
+    if guild_data:
+        online_total = guild_data.get("approximate_presence_count", 0)
+    else:
+        online_total = sum(1 for m in guild.members if m.status != discord.Status.offline)
+    online_humans = max(0, online_total - bots)
+    online_bots = 0  # ไม่สามารถแยกบอทออนไลน์ได้แม่นยำจาก REST API
     
     # นับช่อง
     text_channels = sum(1 for c in guild.channels if isinstance(c, discord.TextChannel))
@@ -752,7 +790,14 @@ async def daily_report():
         
         # นับคนจริงและออนไลน์ (ไม่นับบอท)
         humans = sum(1 for m in guild.members if not m.bot)
-        online_humans = sum(1 for m in guild.members if not m.bot and m.status != discord.Status.offline)
+        # ใช้ REST API สำหรับจำนวนออนไลน์
+        import asyncio as _aio
+        guild_data = await fetch_guild_with_counts(GUILD_ID)
+        if guild_data:
+            online_total = guild_data.get("approximate_presence_count", 0)
+            online_humans = max(0, online_total - sum(1 for m in guild.members if m.bot))
+        else:
+            online_humans = sum(1 for m in guild.members if not m.bot and m.status != discord.Status.offline)
         
         # คำนวณการเปลี่ยนแปลง
         net_change = humans - last_human_count
