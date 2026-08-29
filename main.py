@@ -214,35 +214,31 @@ def build_verify_embed(member_name: str = "") -> discord.Embed:
     embed.set_footer(text="Rowings Universe • Synapse")
     return embed
 
-def build_verify_buttons() -> list[dict]:
-    """สร้างปุ่มสำหรับ DM — ยืนยันตัวตน (interaction) + อ่านกฎ/นโยบาย (link)"""
-    return [
-        {
-            "type": 1,
-            "components": [
-                {
-                    "type": 2, "style": 3, "label": "ยืนยันตัวตน",
-                    "custom_id": "verify_dm",
-                    "emoji": {"name": "✅"}
-                }
-            ]
-        },
-        {
-            "type": 1,
-            "components": [
-                {
-                    "type": 2, "style": 5, "label": "อ่านกฎ",
-                    "url": f"https://discord.com/channels/{GUILD_ID}/{CHANNELS['rules']}",
-                    "emoji": {"name": "📜"}
-                },
-                {
-                    "type": 2, "style": 5, "label": "อ่านนโยบาย",
-                    "url": f"https://discord.com/channels/{GUILD_ID}/{POLICY_CHANNEL}",
-                    "emoji": {"name": "📋"}
-                }
-            ]
-        }
-    ]
+class VerifyView(discord.ui.View):
+    """ปุ่มสำหรับ DM ยืนยันตัวตน — ใช้ discord.ui.View แทน raw components"""
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(discord.ui.Button(
+            style=discord.ButtonStyle.success,
+            label="ยืนยันตัวตน",
+            custom_id="verify_dm",
+            emoji="✅",
+            row=0,
+        ))
+        self.add_item(discord.ui.Button(
+            style=discord.ButtonStyle.link,
+            label="อ่านกฎ",
+            url=f"https://discord.com/channels/{GUILD_ID}/{CHANNELS['rules']}",
+            emoji="📜",
+            row=1,
+        ))
+        self.add_item(discord.ui.Button(
+            style=discord.ButtonStyle.link,
+            label="อ่านนโยบาย",
+            url=f"https://discord.com/channels/{GUILD_ID}/{POLICY_CHANNEL}",
+            emoji="📋",
+            row=1,
+        ))
 
 # ตัวนับรายวัน (เก็บใน memory + sync ลงไฟล์)
 daily_joins: int = 0
@@ -362,6 +358,9 @@ async def on_ready():
     conversation_starter.start()
     weekly_poll.start()
     daily_report.start()
+    # Register persistent view for DM verify button
+    bot.add_view(VerifyView())
+    
     keep_alive_ping.start()
     dm_outreach.start()
 
@@ -984,10 +983,10 @@ async def test_dm(interaction: discord.Interaction):
     await interaction.response.send_message("กำลังส่ง DM ทดสอบ...", ephemeral=True)
     
     embed = build_verify_embed(interaction.user.display_name)
-    components = build_verify_buttons()
+    view = VerifyView()
     
     try:
-        await interaction.user.send(embed=embed, components=components)
+        await interaction.user.send(embed=embed, view=view)
         await interaction.followup.send("✅ ส่ง DM ไปแล้ว! ลองเช็ค DM ดู — กดปุ่มยืนยันตัวตนเพื่อทดสอบได้", ephemeral=True)
     except discord.Forbidden:
         await interaction.followup.send("❌ ไม่สามารถส่ง DM ได้ — อาจปิด DM จากสมาชิกเซิร์ฟเวอร์", ephemeral=True)
@@ -1052,9 +1051,9 @@ async def on_interaction(interaction: discord.Interaction):
 async def send_verify_dm(member: discord.Member) -> bool:
     """ส่ง DM เชิญชวนยืนยันตัวตน — คืน True ถ้าส่งสำเร็จ"""
     embed = build_verify_embed(member.display_name)
-    components = build_verify_buttons()
+    view = VerifyView()
     try:
-        await member.send(embed=embed, components=components)
+        await member.send(embed=embed, view=view)
         return True
     except discord.Forbidden:
         # ผู้ใช้ปิด DM — ข้ามไป
