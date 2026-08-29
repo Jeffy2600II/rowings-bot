@@ -543,7 +543,7 @@ async def userinfo_cmd(interaction: discord.Interaction, member: discord.Member 
     
     embed.add_field(name="สถานะ", value=status_str, inline=True)
     embed.add_field(name="บอท", value="ใช่ 🤖" if target.bot else "ไม่ใช่", inline=True)
-    embed.add_field(name="ปิดเสียง", value="ใช่ 🔇" if target.timed_out else "ไม่ใช่", inline=True)
+    embed.add_field(name="ปิดเสียง", value="ใช่ 🔇" if target.is_timed_out() else "ไม่ใช่", inline=True)
     
     embed.add_field(name="วันเข้าร่วมเซิร์ฟ", value=join_str, inline=False)
     embed.add_field(name="วันสร้างบัญชี", value=created_str, inline=False)
