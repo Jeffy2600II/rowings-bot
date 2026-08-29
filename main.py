@@ -977,6 +977,25 @@ async def keep_alive_ping():
 
 # ─── DM Verification Outreach (BETA) ───────────────────────
 
+@bot.tree.command(name="test-dm", description="[BETA] ทดสอบส่ง DM ยืนยันตัวตนให้ตัวเอง — Admin only")
+@app_commands.checks.has_any_role(*ADMIN_ROLES)
+async def test_dm(interaction: discord.Interaction):
+    """ส่ง DM preview ให้ตัวเองเพื่อทดสอบระบบ"""
+    await interaction.response.send_message("กำลังส่ง DM ทดสอบ...", ephemeral=True)
+    
+    embed = build_verify_embed(interaction.user.display_name)
+    components = build_verify_buttons()
+    
+    try:
+        await interaction.user.send(embed=embed, components=components)
+        await interaction.followup.send("✅ ส่ง DM ไปแล้ว! ลองเช็ค DM ดู — กดปุ่มยืนยันตัวตนเพื่อทดสอบได้", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.followup.send("❌ ไม่สามารถส่ง DM ได้ — อาจปิด DM จากสมาชิกเซิร์ฟเวอร์", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ เกิดข้อผิดพลาด: {e}", ephemeral=True)
+
+# ─── DM Verification Outreach (BETA) ───────────────────────
+
 @bot.event
 async def on_interaction(interaction: discord.Interaction):
     """จับการกดปุ่มยืนยันตัวตนใน DM"""
