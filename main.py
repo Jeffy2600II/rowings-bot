@@ -68,6 +68,14 @@ ROLE_TAGS = {
 # Admin role IDs
 ADMIN_ROLES = {1219406400120426576, 1173176875183521834}  # Owner, Core Team
 
+# Verification outreach config
+MEMBER_ROLE = 1257550199551688735  # 🍎--Member--🍎 (ยศหลังยืนยันตัวตน)
+POLICY_CHANNEL = 1532550201846272150  # นโยบายของเรา
+DM_TRACKING_FILE = Path("dm_tracking.json")
+MAX_DM_ROUNDS = 3          # ส่งสูงสุด 3 รอบ แล้วเลิกตาม
+DM_COOLDOWN_DAYS = 7       # รอ 7 วันระหว่างรอบ
+MIN_JOIN_DAYS = 3          # ส่งเฉพาะคนที่เข้ามาแล้ว >3 วัน และยังไม่ยืนยัน
+
 # ตารางหมุนหัวข้อตามวัน (จันทร์-อาทิตย์)
 DAILY_SCHEDULE = {
     0: "general",   # จันทร์ → พูดคุยทั่วไป
@@ -148,6 +156,93 @@ def load_stats() -> dict:
 def save_stats(data: dict):
     with open(STATS_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+# ─── DM Outreach Tracking ────────────────────────────────
+
+def load_dm_tracking() -> dict:
+    """โหลด tracking เฉพาะคนที่ยังไม่ยืนยัน — ไฟล์เล็ก ลบได้เลยเมื่อยืนยันแล้ว"""
+    if not DM_TRACKING_FILE.exists():
+        return {}
+    try:
+        with open(DM_TRACKING_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return {}
+
+def save_dm_tracking(data: dict):
+    """บันทึก tracking — เก็บเฉพาะคนที่ยังไม่ยืนยันเท่านั้น"""
+    with open(DM_TRACKING_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def remove_from_tracking(user_id: int):
+    """ลบข้อมูลออกจาก tracking เมื่อยืนยันตัวตนแล้ว — ควบคุมขนาดข้อมูล"""
+    tracking = load_dm_tracking()
+    uid = str(user_id)
+    if uid in tracking:
+        del tracking[uid]
+        save_dm_tracking(tracking)
+        log.info(f"Removed {uid} from DM tracking (verified)")
+
+def build_verify_embed(member_name: str = "") -> discord.Embed:
+    """สร้าง embed สำหรับ DM เชิญชวนยืนยันตัวตน"""
+    embed = discord.Embed(
+        title="🎉 ยืนยันตัวตนเพื่อเข้าถึงเซิร์ฟเวอร์เต็มรูปแบบ!",
+        description=(
+            f"สวัสดี{f' {member_name}' if member_name else ''}! "
+            f"เราสังเกตเห็นว่าคุณยังไม่ได้ยืนยันตัวตนใน **Rowings Universe** นะ 😊\n\n"
+            f"ไม่ต้องไปไหน — กดปุ่ม **ยืนยันตัวตน** ด้านล่างได้เลย!"
+        ),
+        color=0x5865F2,
+    )
+    embed.add_field(
+        name="✨ หลังยืนยันแล้วจะได้อะไร?",
+        value=(
+            "💬 เข้าช่องคุยทั้งหมดได้เลย\n"
+            "🎭 รับยศตามความสนใจที่ #จุดรับยศ\n"
+            "👋 แนะนำตัวที่ #แนะนำตัว\n"
+            "📊 ใช้คำสั่ง /stats /topic /faq ได้\n"
+            "🗳️ โหวตและเข้าร่วมกิจกรรม\n"
+            "💡 เสนอไอเดียผ่าน /suggest"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="📌 ก่อนยืนยัน",
+        value="แนะนำให้อ่านกฎและนโยบายของเราก่อน — กดปุ่มด้านล่างได้เลย",
+        inline=False,
+    )
+    embed.set_footer(text="Rowings Universe • Synapse")
+    return embed
+
+def build_verify_buttons() -> list[dict]:
+    """สร้างปุ่มสำหรับ DM — ยืนยันตัวตน (interaction) + อ่านกฎ/นโยบาย (link)"""
+    return [
+        {
+            "type": 1,
+            "components": [
+                {
+                    "type": 2, "style": 3, "label": "ยืนยันตัวตน",
+                    "custom_id": "verify_dm",
+                    "emoji": {"name": "✅"}
+                }
+            ]
+        },
+        {
+            "type": 1,
+            "components": [
+                {
+                    "type": 2, "style": 5, "label": "อ่านกฎ",
+                    "url": f"https://discord.com/channels/{GUILD_ID}/{CHANNELS['rules']}",
+                    "emoji": {"name": "📜"}
+                },
+                {
+                    "type": 2, "style": 5, "label": "อ่านนโยบาย",
+                    "url": f"https://discord.com/channels/{GUILD_ID}/{POLICY_CHANNEL}",
+                    "emoji": {"name": "📋"}
+                }
+            ]
+        }
+    ]
 
 # ตัวนับรายวัน (เก็บใน memory + sync ลงไฟล์)
 daily_joins: int = 0
@@ -268,6 +363,7 @@ async def on_ready():
     weekly_poll.start()
     daily_report.start()
     keep_alive_ping.start()
+    dm_outreach.start()
 
 @bot.event
 async def on_member_join(member: discord.Member):
@@ -878,6 +974,151 @@ async def keep_alive_ping():
         log.debug("Keep-alive ping sent")
     except Exception as e:
         log.debug(f"Keep-alive ping failed: {e}")
+
+# ─── DM Verification Outreach (BETA) ───────────────────────
+
+@bot.event
+async def on_interaction(interaction: discord.Interaction):
+    """จับการกดปุ่มยืนยันตัวตนใน DM"""
+    if interaction.data.get("custom_id") != "verify_dm":
+        return
+
+    # ตรวจสอบว่ายังไม่มียศ Member
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        await interaction.response.send_message(
+            "ไม่สามารถตรวจสอบเซิร์ฟเวอร์ได้ ลองใหม่อีกครั้งนะ", ephemeral=True
+        )
+        return
+
+    member = guild.get_member(interaction.user.id)
+    if not member:
+        # อาจไม่ได้อยู่ในเซิร์ฟเวอร์
+        await interaction.response.send_message(
+            "ไม่พบข้อมูลสมาชิก — ลองเข้าร่วมเซิร์ฟเวอร์ก่อนนะ", ephemeral=True
+        )
+        return
+
+    if MEMBER_ROLE in [r.id for r in member.roles]:
+        await interaction.response.send_message(
+            "คุณยืนยันตัวตนแล้ว! 🎉", ephemeral=True
+        )
+        remove_from_tracking(member.id)
+        return
+
+    # ให้ยศ Member
+    try:
+        await member.add_roles(
+            member.guild.get_role(MEMBER_ROLE),
+            reason="ยืนยันตัวตนผ่าน DM"
+        )
+        # ลบจาก tracking ทันที — ควบคุมขนาดข้อมูล
+        remove_from_tracking(member.id)
+        log.info(f"Verified via DM: {member.name} (ID: {member.id})")
+
+        await interaction.response.send_message(
+            "ยืนยันตัวตนสำเร็จ! 🎉 ตอนนี้คุณเข้าถึงเซิร์ฟเวอร์เต็มรูปแบบแล้ว\n"
+            "ลองไปแนะนำตัวที่ #แนะนำตัว และรับยศที่ #จุดรับยศ ได้เลยนะ!",
+            ephemeral=True
+        )
+    except discord.Forbidden:
+        await interaction.response.send_message(
+            "บอทไม่มีสิทธิ์ให้ยศ ติดต่อแอดมินได้ที่ #ติดต่อทีมซัพพอร์ต", ephemeral=True
+        )
+    except discord.HTTPException as e:
+        await interaction.response.send_message(
+            f"เกิดข้อผิดพลาด: {e}", ephemeral=True
+        )
+
+async def send_verify_dm(member: discord.Member) -> bool:
+    """ส่ง DM เชิญชวนยืนยันตัวตน — คืน True ถ้าส่งสำเร็จ"""
+    embed = build_verify_embed(member.display_name)
+    components = build_verify_buttons()
+    try:
+        await member.send(embed=embed, components=components)
+        return True
+    except discord.Forbidden:
+        # ผู้ใช้ปิด DM — ข้ามไป
+        log.info(f"DM blocked for {member.name} (ID: {member.id})")
+        return False
+    except discord.HTTPException as e:
+        log.warning(f"DM failed for {member.name}: {e}")
+        return False
+
+@tasks.loop(hours=24)
+async def dm_outreach():
+    """ส่ง DM เชิญชวนยืนยันตัวตน — เดินทุก 24 ชม. แต่ส่งตาม cooldown ของแต่ละคน"""
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+
+    tracking = load_dm_tracking()
+    now = datetime.now(ICT)
+    updated = False
+
+    for member in guild.members:
+        if member.bot:
+            continue
+        # ข้ามคนที่มียศ Member แล้ว (และลบจาก tracking)
+        if MEMBER_ROLE in [r.id for r in member.roles]:
+            uid = str(member.id)
+            if uid in tracking:
+                del tracking[uid]
+                updated = True
+            continue
+
+        uid = str(member.id)
+        entry = tracking.get(uid)
+
+        # คนใหม่ — เริ่ม tracking เฉพาะที่เข้ามา > MIN_JOIN_DAYS วัน
+        if not entry:
+            joined = member.joined_at
+            if joined is None:
+                continue
+            joined_local = joined.astimezone(ICT) if joined.tzinfo else joined.replace(tzinfo=timezone.utc).astimezone(ICT)
+            days_joined = (now - joined_local).days
+            if days_joined < MIN_JOIN_DAYS:
+                continue
+            # เริ่ม tracking — ส่งรอบแรกได้เลย
+            tracking[uid] = {
+                "joined_at": joined.isoformat(),
+                "dm_count": 0,
+                "last_dm": None,
+                "next_dm": now.isoformat()
+            }
+            entry = tracking[uid]
+            updated = True
+
+        # เช็ค cooldown
+        next_dm_str = entry.get("next_dm")
+        if next_dm_str:
+            next_dm = datetime.fromisoformat(next_dm_str)
+            if now < next_dm:
+                continue
+
+        # เช็คจำนวนรอบ
+        if entry.get("dm_count", 0) >= MAX_DM_ROUNDS:
+            continue
+
+        # ส่ง DM
+        success = await send_verify_dm(member)
+        entry["dm_count"] = entry.get("dm_count", 0) + 1
+        entry["last_dm"] = now.isoformat()
+        if success:
+            # กำหนดรอบถัดไป
+            next_time = now + timedelta(days=DM_COOLDOWN_DAYS)
+            entry["next_dm"] = next_time.isoformat()
+            log.info(f"DM sent to {member.name} (round {entry['dm_count']}/{MAX_DM_ROUNDS})")
+        else:
+            # DM ไม่สำเร็จ — รอ cooldown แล้วลองใหม่
+            next_time = now + timedelta(days=DM_COOLDOWN_DAYS)
+            entry["next_dm"] = next_time.isoformat()
+            log.info(f"DM failed for {member.name} — will retry in {DM_COOLDOWN_DAYS} days")
+        updated = True
+
+    # บันทึก tracking (เฉพาะคนที่ยังไม่ยืนยัน)
+    if updated:
+        save_dm_tracking(tracking)
 
 # ─── Main ────────────────────────────────────────────────
 
