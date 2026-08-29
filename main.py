@@ -488,6 +488,163 @@ async def suggest_cmd(interaction: discord.Interaction, suggestion: str):
         await interaction.response.send_message("ส่งไม่สำเร็จ ลองใหม่อีกครั้งนะ", ephemeral=True)
         log.error(f"Failed to send suggestion: {e}")
 
+
+@bot.tree.command(name="userinfo", description="[Admin] ดูข้อมูลสมาชิก")
+@app_commands.describe(member="สมาชิกที่ต้องการดู (ไม่ระบุ = ตัวเอง)")
+async def userinfo_cmd(interaction: discord.Interaction, member: discord.Member = None):
+    """ดูข้อมูลสมาชิกแบบละเอียดสำหรับแอดมิน"""
+    if not any(r.id in ADMIN_ROLES for r in interaction.user.roles):
+        await interaction.response.send_message("คำสั่งนี้สำหรับ Admin เท่านั้นนะ", ephemeral=True)
+        return
+    
+    target = member or interaction.user
+    
+    # คำนวณวันเข้าร่วม
+    joined_at = target.joined_at
+    if joined_at:
+        joined_at_ict = joined_at.astimezone(ICT)
+        join_str = f"{thai_date(joined_at_ict)} ({(datetime.now(ICT) - joined_at_ict).days} วันที่แล้ว)"
+    else:
+        join_str = "ไม่ทราบ"
+    
+    # วันสร้างบัญชี
+    created_at = target.created_at
+    if created_at:
+        created_ict = created_at.astimezone(ICT)
+        account_age = (datetime.now(ICT) - created_ict).days
+        created_str = f"{thai_date(created_ict)} ({account_age} วันที่แล้ว)"
+    else:
+        created_str = "ไม่ทราบ"
+    
+    # ยศ (เรียงตาม position)
+    roles_list = [r.mention for r in target.roles if r.name != "@everyone"]
+    roles_str = " ".join(roles_list) if roles_list else "ไม่มียศ"
+    if len(roles_str) > 1024:
+        roles_str = roles_str[:1021] + "..."
+    
+    # สถานะ
+    status_map = {
+        discord.Status.online: "🟢 ออนไลน์",
+        discord.Status.idle: "🟡 ไม่อยู่",
+        discord.Status.dnd: "🔴 ห้ามรบกวน",
+        discord.Status.offline: "⚫ ออฟไลน์",
+    }
+    status_str = status_map.get(target.status, "ไม่ทราบ")
+    
+    embed = discord.Embed(
+        title=f"👤 ข้อมูลสมาชิก — {target.display_name}",
+        color=target.color if target.color.value != 0 else 0x5865F2
+    )
+    embed.set_thumbnail(url=target.display_avatar.url if target.display_avatar else None)
+    
+    embed.add_field(name="ชื่อผู้ใช้", value=target.name, inline=True)
+    embed.add_field(name="แสดงตัว", value=target.display_name, inline=True)
+    embed.add_field(name="ID", value=str(target.id), inline=True)
+    
+    embed.add_field(name="สถานะ", value=status_str, inline=True)
+    embed.add_field(name="บอท", value="ใช่ 🤖" if target.bot else "ไม่ใช่", inline=True)
+    embed.add_field(name="ปิดเสียง", value="ใช่ 🔇" if target.timed_out else "ไม่ใช่", inline=True)
+    
+    embed.add_field(name="วันเข้าร่วมเซิร์ฟ", value=join_str, inline=False)
+    embed.add_field(name="วันสร้างบัญชี", value=created_str, inline=False)
+    
+    embed.add_field(name="ยศ", value=roles_str, inline=False)
+    
+    # บทบาทเด่น
+    key_roles = []
+    if target.guild.owner_id == target.id:
+        key_roles.append("👑 เจ้าของเซิร์ฟ")
+    if any(r.id in ADMIN_ROLES for r in target.roles):
+        key_roles.append("🛡️ แอดมิน")
+    if key_roles:
+        embed.add_field(name="บทบาท", value=" | ".join(key_roles), inline=False)
+    
+    embed.set_footer(text=f"Synapse • Rowings Universe | {thai_date(datetime.now(ICT))}")
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="serverinfo", description="[Admin] ดูภาพรวมเซิร์ฟเวอร์")
+async def serverinfo_cmd(interaction: discord.Interaction):
+    """ดูภาพรวมเซิร์ฟเวอร์สำหรับแอดมิน"""
+    if not any(r.id in ADMIN_ROLES for r in interaction.user.roles):
+        await interaction.response.send_message("คำสั่งนี้สำหรับ Admin เท่านั้นนะ", ephemeral=True)
+        return
+    
+    guild = interaction.guild
+    
+    # นับสมาชิก
+    humans = sum(1 for m in guild.members if not m.bot)
+    bots = sum(1 for m in guild.members if m.bot)
+    online_humans = sum(1 for m in guild.members if not m.bot and m.status != discord.Status.offline)
+    online_bots = sum(1 for m in guild.members if m.bot and m.status != discord.Status.offline)
+    
+    # นับช่อง
+    text_channels = sum(1 for c in guild.channels if isinstance(c, discord.TextChannel))
+    voice_channels = sum(1 for c in guild.channels if isinstance(c, discord.VoiceChannel))
+    categories = sum(1 for c in guild.channels if isinstance(c, discord.CategoryChannel))
+    
+    # วันสร้างเซิร์ฟ
+    created_ict = guild.created_at.astimezone(ICT)
+    age_days = (datetime.now(ICT) - created_ict).days
+    
+    # ยศที่ไม่ใช่ @everyone และ bot roles
+    human_roles = [r for r in guild.roles if r.name != "@everyone" and not r.managed]
+    bot_managed_roles = [r for r in guild.roles if r.managed]
+    
+    # สมาชิกใหม่ 7 วันล่าสุด
+    now = datetime.now(ICT)
+    recent_members = []
+    for m in guild.members:
+        if m.bot:
+            continue
+        if m.joined_at:
+            joined_ict = m.joined_at.astimezone(ICT)
+            if (now - joined_ict).days <= 7:
+                recent_members.append(m)
+    recent_members.sort(key=lambda x: x.joined_at, reverse=True)
+    
+    embed = discord.Embed(
+        title=f"🏛️ ข้อมูลเซิร์ฟเวอร์ — {guild.name}",
+        description=f"สร้างเมื่อ {thai_date(created_ict)} ({age_days} วันที่แล้ว)",
+        color=0x5865F2
+    )
+    
+    if guild.icon:
+        embed.set_thumbnail(url=guild.icon.url)
+    
+    embed.add_field(name="คนจริง", value=f"👤 {humans}", inline=True)
+    embed.add_field(name="ออนไลน์", value=f"🟢 {online_humans}", inline=True)
+    embed.add_field(name="บอท", value=f"🤖 {bots} ({online_bots} ออนไลน์)", inline=True)
+    
+    embed.add_field(name="ช่องข้อความ", value=f"📝 {text_channels}", inline=True)
+    embed.add_field(name="ช่องเสียง", value=f"🔊 {voice_channels}", inline=True)
+    embed.add_field(name="หมวดหมู่", value=f"📁 {categories}", inline=True)
+    
+    embed.add_field(name="ยศทั้งหมด", value=f"🏷️ {len(guild.roles)}", inline=True)
+    embed.add_field(name="ยศผู้ใช้", value=f"👥 {len(human_roles)}", inline=True)
+    embed.add_field(name="ยศบอท", value=f"🤖 {len(bot_managed_roles)}", inline=True)
+    
+    # ระดับ verification
+    ver_levels = {0: "ไม่มี", 1: "ต่ำ (Email)", 2: "กลาง (เข้า Discord 5+ นาที)", 3: "สูง (สมาชิก 10+ นาที)", 4: "สูงสุด (เบอร์โทร)"}
+    embed.add_field(name="ระดับยืนยัน", value=ver_levels.get(guild.verification_level, "ไม่ทราบ"), inline=True)
+    embed.add_field(name="Owner", value=f"<@{guild.owner_id}>", inline=True)
+    embed.add_field(name="Boost", value=f"🚀 {guild.premium_subscription_count} (Level {guild.premium_tier})", inline=True)
+    
+    # สมาชิกใหม่ล่าสุด
+    if recent_members:
+        recent_str = "\n".join(f"• {m.display_name} — {thai_date(m.joined_at.astimezone(ICT))}" for m in recent_members[:5])
+        if len(recent_members) > 5:
+            recent_str += f"\n• และอีก {len(recent_members) - 5} คน..."
+        embed.add_field(name=f"🆕 สมาชิกใหม่ (7 วันล่าสุด)", value=recent_str, inline=False)
+    else:
+        embed.add_field(name="🆕 สมาชิกใหม่ (7 วันล่าสุด)", value="ไม่มีสมาชิกใหม่ในช่วง 7 วัน", inline=False)
+    
+    embed.set_footer(text=f"Synapse • Rowings Universe | {thai_date(datetime.now(ICT))}")
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 # ─── Scheduled Tasks ────────────────────────────────────
 
 @tasks.loop(minutes=1)
